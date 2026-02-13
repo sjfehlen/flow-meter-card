@@ -157,68 +157,13 @@ class MenstrualCycleTrackerCard extends HTMLElement {
     this._render();
 
     const service = action === 'start' ? 'log_period_start' : 'log_period_end';
-    const fullAction = `${DOMAIN}.${service}`;
-
-    let ok = false;
-
-    // Strategy 1: hass.callService (standard documented API)
-    if (!ok) {
-      try {
-        await this._hass.callService(DOMAIN, service, {});
-        ok = true;
-      } catch (e) {
-        console.warn(`[cycle-card] callService(${fullAction}) failed:`, e);
-      }
-    }
-
-    // Strategy 2: hass.callWS (lower-level WebSocket call)
-    if (!ok) {
-      try {
-        await this._hass.callWS({
-          type: 'call_service',
-          domain: DOMAIN,
-          service: service,
-          service_data: {},
-        });
-        ok = true;
-      } catch (e) {
-        console.warn(`[cycle-card] callWS(${fullAction}) failed:`, e);
-      }
-    }
-
-    // Strategy 3: REST API
-    if (!ok && this._hass.callApi) {
-      try {
-        await this._hass.callApi('POST', `services/${DOMAIN}/${service}`);
-        ok = true;
-      } catch (e) {
-        console.warn(`[cycle-card] callApi(${fullAction}) failed:`, e);
-      }
-    }
-
-    // Strategy 4: Fire HA native perform-action event
-    if (!ok) {
-      console.warn(`[cycle-card] All direct calls failed, firing hass-action event for ${fullAction}`);
-      this.dispatchEvent(new CustomEvent('hass-action', {
-        detail: {
-          config: {
-            tap_action: {
-              action: 'perform-action',
-              perform_action: fullAction,
-              data: {},
-            },
-          },
-          action: 'tap',
-        },
-        bubbles: true,
-        composed: true,
-      }));
-      ok = true;
-    }
-
-    if (ok) {
+    try {
+      await this._hass.callService(
+        DOMAIN, service, {},
+        { entity_id: this._config.entity },
+      );
       setTimeout(() => { this._pending = null; this._render(); }, 2500);
-    } else {
+    } catch {
       this._pending = null;
       this._render();
     }
