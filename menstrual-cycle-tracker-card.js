@@ -83,6 +83,7 @@ const SCHEMA = [
   { name: 'show_stats',       label: 'Show avg cycle / period length',     selector: { boolean: {} } },
   { name: 'show_symptoms',    label: "Show today's symptoms",              selector: { boolean: {} } },
   { name: 'show_log_buttons', label: 'Show Log Period Start / End buttons', selector: { boolean: {} } },
+  { name: 'tracker',         label: 'Tracker ID (from Developer Tools → Actions → tracker field)', selector: { text: {} } },
 ];
 
 // ── Card ───────────────────────────────────────────────────────────────────────
@@ -159,14 +160,34 @@ class MenstrualCycleTrackerCard extends HTMLElement {
     const service = action === 'start' ? 'log_period_start' : 'log_period_end';
 
     // Resolve config_entry_id so the integration knows which tracker to target.
+    // Priority: card config → WS entity registry → device registry
     if (!this._trackerId) {
-      try {
-        const entry = await this._hass.callWS({
-          type: 'config/entity_registry/get',
-          entity_id: this._config.entity,
-        });
-        this._trackerId = entry?.config_entry_id;
-      } catch { /* leave undefined */ }
+      this._trackerId = this._config.tracker || null;
+
+      if (!this._trackerId) {
+        try {
+          const entry = await this._hass.callWS({
+            type: 'config/entity_registry/get',
+            entity_id: this._config.entity,
+          });
+          this._trackerId = entry?.config_entry_id;
+        } catch (e) {
+          console.warn('[cycle-card] entity registry WS failed:', e);
+        }
+      }
+
+      if (!this._trackerId) {
+        try {
+          const ent = this._hass.entities?.[this._config.entity];
+          const devId = ent?.device_id || ent?.di;
+          if (devId) {
+            const dev = this._hass.devices?.[devId];
+            this._trackerId = (dev?.config_entries)?.[0];
+          }
+        } catch { /* ignore */ }
+      }
+
+      console.log('[cycle-card] resolved tracker:', this._trackerId ?? 'NONE');
     }
 
     try {
