@@ -83,7 +83,6 @@ const SCHEMA = [
   { name: 'show_stats',       label: 'Show avg cycle / period length',     selector: { boolean: {} } },
   { name: 'show_symptoms',    label: "Show today's symptoms",              selector: { boolean: {} } },
   { name: 'show_log_buttons', label: 'Show Log Period Start / End buttons', selector: { boolean: {} } },
-  { name: 'show_custom_buttons', label: 'Show custom action buttons',      selector: { boolean: {} } },
 ];
 
 // ── Card ───────────────────────────────────────────────────────────────────────
@@ -105,14 +104,6 @@ class MenstrualCycleTrackerCard extends HTMLElement {
         e.stopPropagation();
         const action = logBtn.dataset.action;
         if (action) this._log(action);
-        return;
-      }
-
-      // Custom action buttons
-      const customBtn = e.target.closest('.custom-btn');
-      if (customBtn && !customBtn.disabled) {
-        e.stopPropagation();
-        this._fireCustomAction(parseInt(customBtn.dataset.index, 10));
         return;
       }
 
@@ -144,8 +135,6 @@ class MenstrualCycleTrackerCard extends HTMLElement {
       show_stats:           true,
       show_symptoms:        true,
       show_log_buttons:     true,
-      show_custom_buttons:  true,
-      custom_buttons:       [],
     };
   }
 
@@ -168,10 +157,68 @@ class MenstrualCycleTrackerCard extends HTMLElement {
     this._render();
 
     const service = action === 'start' ? 'log_period_start' : 'log_period_end';
-    try {
-      await this._hass.callService(DOMAIN, service, {});
+    const fullAction = `${DOMAIN}.${service}`;
+
+    let ok = false;
+
+    // Strategy 1: hass.callService (standard documented API)
+    if (!ok) {
+      try {
+        await this._hass.callService(DOMAIN, service, {});
+        ok = true;
+      } catch (e) {
+        console.warn(`[cycle-card] callService(${fullAction}) failed:`, e);
+      }
+    }
+
+    // Strategy 2: hass.callWS (lower-level WebSocket call)
+    if (!ok) {
+      try {
+        await this._hass.callWS({
+          type: 'call_service',
+          domain: DOMAIN,
+          service: service,
+          service_data: {},
+        });
+        ok = true;
+      } catch (e) {
+        console.warn(`[cycle-card] callWS(${fullAction}) failed:`, e);
+      }
+    }
+
+    // Strategy 3: REST API
+    if (!ok && this._hass.callApi) {
+      try {
+        await this._hass.callApi('POST', `services/${DOMAIN}/${service}`);
+        ok = true;
+      } catch (e) {
+        console.warn(`[cycle-card] callApi(${fullAction}) failed:`, e);
+      }
+    }
+
+    // Strategy 4: Fire HA native perform-action event
+    if (!ok) {
+      console.warn(`[cycle-card] All direct calls failed, firing hass-action event for ${fullAction}`);
+      this.dispatchEvent(new CustomEvent('hass-action', {
+        detail: {
+          config: {
+            tap_action: {
+              action: 'perform-action',
+              perform_action: fullAction,
+              data: {},
+            },
+          },
+          action: 'tap',
+        },
+        bubbles: true,
+        composed: true,
+      }));
+      ok = true;
+    }
+
+    if (ok) {
       setTimeout(() => { this._pending = null; this._render(); }, 2500);
-    } catch {
+    } else {
       this._pending = null;
       this._render();
     }
@@ -185,23 +232,6 @@ class MenstrualCycleTrackerCard extends HTMLElement {
       composed: true,
     });
     this.dispatchEvent(event);
-  }
-
-  async _fireCustomAction(index) {
-    const btn = this._config.custom_buttons?.[index];
-    if (!btn?.action || !this._hass) return;
-
-    // Parse "domain.service" format
-    const dotIdx = btn.action.indexOf('.');
-    if (dotIdx < 1) return;
-    const domain  = btn.action.substring(0, dotIdx);
-    const service = btn.action.substring(dotIdx + 1);
-
-    try {
-      await this._hass.callService(domain, service, btn.data || {}, btn.target);
-    } catch {
-      // HA shows native error toast via callService notifyOnError
-    }
   }
 
   // ── Render ────────────────────────────────────────────────────────────────────
@@ -368,19 +398,7 @@ class MenstrualCycleTrackerCard extends HTMLElement {
       logHtml = `<div class="log-row">${logHtml}</div>`;
     }
 
-    // ── Custom action buttons ──────────────────────────────────────────────────
-    let customBtnHtml = '';
-    if (cfg.show_custom_buttons !== false && cfg.custom_buttons?.length) {
-      const btns = cfg.custom_buttons.map((btn, i) => {
-        const icon = btn.icon
-          ? `<ha-icon icon="${esc(btn.icon)}" style="--mdc-icon-size:18px"></ha-icon> `
-          : '';
-        return `<button class="custom-btn" data-index="${i}">
-                  ${icon}${esc(btn.name || 'Button')}
-                </button>`;
-      }).join('');
-      customBtnHtml = `<div class="custom-btns">${btns}</div>`;
-    }
+
 
     // ── Full render ────────────────────────────────────────────────────────────
     this.shadowRoot.innerHTML = `
@@ -479,24 +497,6 @@ class MenstrualCycleTrackerCard extends HTMLElement {
         .log-btn:disabled { opacity: .55; cursor: default; }
         .log-btn:not(:disabled):hover { opacity: .85; }
 
-        /* ── Custom buttons ── */
-        .custom-btns {
-          display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px;
-        }
-        .custom-btn {
-          flex: 1 1 auto; min-width: 0;
-          display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-          padding: 8px 14px; border-radius: 8px;
-          border: 1.5px solid var(--divider-color, #ddd);
-          background: var(--secondary-background-color, #f5f5f5);
-          color: var(--primary-text-color);
-          font-size: .82rem; font-weight: 500;
-          cursor: pointer;
-          transition: opacity .15s, background .15s;
-        }
-        .custom-btn:hover { opacity: .8; background: var(--divider-color, #e0e0e0); }
-        .custom-btn:active { opacity: .6; }
-        .custom-btn ha-icon { flex-shrink: 0; }
       </style>
 
       <ha-card>
@@ -519,8 +519,6 @@ class MenstrualCycleTrackerCard extends HTMLElement {
         ${sympHtml}
 
         ${logHtml}
-
-        ${customBtnHtml}
 
       </ha-card>
     `;
