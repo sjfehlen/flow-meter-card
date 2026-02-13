@@ -1,4 +1,6 @@
 {
   "name": "Menstrual Cycle Tracker Card",
-  "render_readme": true
+  "render_readme": true,
+  "filename": "menstrual-cycle-tracker-card.js",
+  "content_in_root": true
 }
