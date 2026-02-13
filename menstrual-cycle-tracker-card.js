@@ -53,10 +53,11 @@ const pl = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 // ── Row builder ────────────────────────────────────────────────────────────────
 
-function infoRow(icon, label, value, valueColor) {
+function infoRow(icon, label, value, valueColor, entityId) {
   const style = valueColor ? ` style="color:${esc(valueColor)}"` : '';
+  const entity = entityId ? ` data-entity="${esc(entityId)}"` : '';
   return `
-    <div class="row">
+    <div class="row${entityId ? ' clickable' : ''}"${entity}>
       <ha-icon icon="${esc(icon)}"></ha-icon>
       <span class="row-label">${esc(label)}</span>
       <span class="row-value"${style}>${esc(value)}</span>
@@ -82,6 +83,7 @@ const SCHEMA = [
   { name: 'show_stats',       label: 'Show avg cycle / period length',     selector: { boolean: {} } },
   { name: 'show_symptoms',    label: "Show today's symptoms",              selector: { boolean: {} } },
   { name: 'show_log_buttons', label: 'Show Log Period Start / End buttons', selector: { boolean: {} } },
+  { name: 'show_custom_buttons', label: 'Show custom action buttons',      selector: { boolean: {} } },
 ];
 
 // ── Card ───────────────────────────────────────────────────────────────────────
@@ -93,7 +95,35 @@ class MenstrualCycleTrackerCard extends HTMLElement {
     this._config  = null;
     this._hass    = null;
     this._ent     = null;
-    this._pending = null; // 'start' | 'end' — service call in-flight
+    this._pending = null; // 'start' | 'end' — log service call in-flight
+
+    // ── Single event-delegation listener (survives innerHTML replacements) ──
+    this.shadowRoot.addEventListener('click', (e) => {
+      // Log period buttons
+      const logBtn = e.target.closest('.log-btn');
+      if (logBtn && !logBtn.disabled) {
+        e.stopPropagation();
+        const action = logBtn.dataset.action;
+        if (action) this._log(action);
+        return;
+      }
+
+      // Custom action buttons
+      const customBtn = e.target.closest('.custom-btn');
+      if (customBtn && !customBtn.disabled) {
+        e.stopPropagation();
+        this._fireCustomAction(parseInt(customBtn.dataset.index, 10));
+        return;
+      }
+
+      // More-info on clickable rows / elements
+      const clickable = e.target.closest('[data-entity]');
+      if (clickable) {
+        e.stopPropagation();
+        this._showMoreInfo(clickable.dataset.entity);
+        return;
+      }
+    });
   }
 
   static getConfigElement() {
@@ -106,14 +136,16 @@ class MenstrualCycleTrackerCard extends HTMLElement {
       title: '',
       subject: 'You',
       possessive: 'Your',
-      show_cycle_bar:   true,
-      show_next:        true,
-      show_fertile:     true,
-      show_pms:         true,
-      show_last:        false,
-      show_stats:       true,
-      show_symptoms:    true,
-      show_log_buttons: true,
+      show_cycle_bar:       true,
+      show_next:            true,
+      show_fertile:         true,
+      show_pms:             true,
+      show_last:            false,
+      show_stats:           true,
+      show_symptoms:        true,
+      show_log_buttons:     true,
+      show_custom_buttons:  true,
+      custom_buttons:       [],
     };
   }
 
@@ -139,17 +171,37 @@ class MenstrualCycleTrackerCard extends HTMLElement {
     try {
       await this._hass.callService(DOMAIN, service, {});
       setTimeout(() => { this._pending = null; this._render(); }, 2500);
-    } catch (err) {
-      // Clear pending immediately and let HA show the native error notification.
+    } catch {
       this._pending = null;
       this._render();
-      throw err;
     }
   }
 
-  _attachListeners() {
-    this.shadowRoot.getElementById('btn-start')?.addEventListener('click', () => this._log('start'));
-    this.shadowRoot.getElementById('btn-end')  ?.addEventListener('click', () => this._log('end'));
+  _showMoreInfo(entityId) {
+    if (!entityId) return;
+    const event = new CustomEvent('hass-more-info', {
+      detail: { entityId },
+      bubbles: true,
+      composed: true,
+    });
+    this.dispatchEvent(event);
+  }
+
+  async _fireCustomAction(index) {
+    const btn = this._config.custom_buttons?.[index];
+    if (!btn?.action || !this._hass) return;
+
+    // Parse "domain.service" format
+    const dotIdx = btn.action.indexOf('.');
+    if (dotIdx < 1) return;
+    const domain  = btn.action.substring(0, dotIdx);
+    const service = btn.action.substring(dotIdx + 1);
+
+    try {
+      await this._hass.callService(domain, service, btn.data || {}, btn.target);
+    } catch {
+      // HA shows native error toast via callService notifyOnError
+    }
   }
 
   // ── Render ────────────────────────────────────────────────────────────────────
@@ -235,7 +287,7 @@ class MenstrualCycleTrackerCard extends HTMLElement {
            </div>`
         : '';
 
-      barHtml = `<div class="bar-track">${segHtml}${dotHtml}</div>`;
+      barHtml = `<div class="bar-track clickable" data-entity="${esc(e.cycleDay)}">${segHtml}${dotHtml}</div>`;
     }
 
     // ── Info rows ─────────────────────────────────────────────────────────────
@@ -254,25 +306,27 @@ class MenstrualCycleTrackerCard extends HTMLElement {
         nextLabel = nextPeriodStr;
       }
       rows.push(infoRow('mdi:calendar-clock', 'Next period', nextLabel,
-        (daysOverdue != null && daysOverdue >= 0) ? '#ef5350' : null));
+        (daysOverdue != null && daysOverdue >= 0) ? '#ef5350' : null, e.nextPeriod));
     }
 
     if (cfg.show_fertile !== false) {
       rows.push(infoRow('mdi:flower-outline', 'Fertile window', isFertile ? 'Yes — ovulation window' : 'No',
-        isFertile ? '#66bb6a' : null));
+        isFertile ? '#66bb6a' : null, e.fertileWindow));
     }
 
     if (cfg.show_pms !== false) {
       rows.push(infoRow('mdi:emoticon-sad-outline', 'PMS window', isPms ? 'Yes — within 5 days' : 'No',
-        isPms ? '#ab47bc' : null));
+        isPms ? '#ab47bc' : null, e.fertileWindow));
     }
 
     if (cfg.show_last !== false && (lastStart || lastEnd)) {
-      rows.push(infoRow('mdi:calendar-range', 'Last period', `${fmtDate(lastStart)} → ${fmtDate(lastEnd)}`));
+      rows.push(infoRow('mdi:calendar-range', 'Last period', `${fmtDate(lastStart)} → ${fmtDate(lastEnd)}`,
+        null, e.periodActive));
     }
 
     if (cfg.show_stats !== false) {
-      rows.push(infoRow('mdi:chart-bar', 'Avg cycle / period', `${cycleLen} days / ${periodLen} days`));
+      rows.push(infoRow('mdi:chart-bar', 'Avg cycle / period', `${cycleLen} days / ${periodLen} days`,
+        null, e.cycleLength));
     }
 
     // ── Symptoms ───────────────────────────────────────────────────────────────
@@ -283,7 +337,7 @@ class MenstrualCycleTrackerCard extends HTMLElement {
         return `<span class="chip">${esc(s.symptom)}${sev}</span>`;
       }).join('');
       sympHtml = `
-        <div class="section-label">Today's symptoms</div>
+        <div class="section-label clickable" data-entity="${esc(e.todaysSymptoms)}">Today's symptoms</div>
         <div class="chips">${chips}</div>`;
     }
 
@@ -297,14 +351,14 @@ class MenstrualCycleTrackerCard extends HTMLElement {
 
       if (!isActive) {
         logHtml = `
-          <button id="btn-start" class="log-btn${pendStart ? ' done' : ''}"
+          <button class="log-btn${pendStart ? ' done' : ''}" data-action="start"
                   style="background:${pendStart ? '#4caf50' : c};border-color:${pendStart ? '#4caf50' : c}"
                   ${disabled}>
             ${pendStart ? '✓ Period start logged' : 'Log Period Start'}
           </button>`;
       } else {
         logHtml = `
-          <button id="btn-end" class="log-btn outline${pendEnd ? ' done' : ''}"
+          <button class="log-btn outline${pendEnd ? ' done' : ''}" data-action="end"
                   style="color:${pendEnd ? '#4caf50' : c};border-color:${pendEnd ? '#4caf50' : c}"
                   ${disabled}>
             ${pendEnd ? '✓ Period end logged' : 'Log Period End'}
@@ -312,6 +366,20 @@ class MenstrualCycleTrackerCard extends HTMLElement {
       }
 
       logHtml = `<div class="log-row">${logHtml}</div>`;
+    }
+
+    // ── Custom action buttons ──────────────────────────────────────────────────
+    let customBtnHtml = '';
+    if (cfg.show_custom_buttons !== false && cfg.custom_buttons?.length) {
+      const btns = cfg.custom_buttons.map((btn, i) => {
+        const icon = btn.icon
+          ? `<ha-icon icon="${esc(btn.icon)}" style="--mdc-icon-size:18px"></ha-icon> `
+          : '';
+        return `<button class="custom-btn" data-index="${i}">
+                  ${icon}${esc(btn.name || 'Button')}
+                </button>`;
+      }).join('');
+      customBtnHtml = `<div class="custom-btns">${btns}</div>`;
     }
 
     // ── Full render ────────────────────────────────────────────────────────────
@@ -373,9 +441,17 @@ class MenstrualCycleTrackerCard extends HTMLElement {
         }
         .today-dot:hover .today-label { display: block; }
 
+        /* ── Clickable elements ── */
+        .clickable { cursor: pointer; }
+        .row.clickable:hover { background: var(--secondary-background-color); border-radius: 6px; }
+
         /* ── Info rows ── */
         .rows { display: flex; flex-direction: column; gap: 7px; margin-bottom: 10px; }
-        .row { display: flex; align-items: center; gap: 8px; min-height: 20px; }
+        .row {
+          display: flex; align-items: center; gap: 8px; min-height: 20px;
+          padding: 2px 4px; margin: -2px -4px;
+          transition: background .15s;
+        }
         .row ha-icon { --mdc-icon-size: 16px; color: var(--secondary-text-color); flex-shrink: 0; }
         .row-label { font-size: .82rem; color: var(--secondary-text-color); width: 110px; flex-shrink: 0; }
         .row-value { font-size: .85rem; color: var(--primary-text-color); font-weight: 500; }
@@ -402,17 +478,36 @@ class MenstrualCycleTrackerCard extends HTMLElement {
         .log-btn.done    { background: #4caf50 !important; border-color: #4caf50 !important; color: white !important; }
         .log-btn:disabled { opacity: .55; cursor: default; }
         .log-btn:not(:disabled):hover { opacity: .85; }
+
+        /* ── Custom buttons ── */
+        .custom-btns {
+          display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px;
+        }
+        .custom-btn {
+          flex: 1 1 auto; min-width: 0;
+          display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+          padding: 8px 14px; border-radius: 8px;
+          border: 1.5px solid var(--divider-color, #ddd);
+          background: var(--secondary-background-color, #f5f5f5);
+          color: var(--primary-text-color);
+          font-size: .82rem; font-weight: 500;
+          cursor: pointer;
+          transition: opacity .15s, background .15s;
+        }
+        .custom-btn:hover { opacity: .8; background: var(--divider-color, #e0e0e0); }
+        .custom-btn:active { opacity: .6; }
+        .custom-btn ha-icon { flex-shrink: 0; }
       </style>
 
       <ha-card>
 
         <div class="header">
-          <div class="badge">
+          <div class="badge clickable" data-entity="${esc(e.currentPhase)}">
             <span class="badge-icon">${meta.icon}</span>
             <span>${esc(phase)}</span>
           </div>
           <div class="card-title">${title}</div>
-          ${cycleDay ? `<div class="cycle-day-chip">Day ${cycleDay} of ${cycleLen}</div>` : ''}
+          ${cycleDay ? `<div class="cycle-day-chip clickable" data-entity="${esc(e.cycleDay)}">Day ${cycleDay} of ${cycleLen}</div>` : ''}
         </div>
 
         ${statusLine ? `<div class="status">${esc(statusLine)}</div>` : '<div style="height:12px"></div>'}
@@ -425,10 +520,10 @@ class MenstrualCycleTrackerCard extends HTMLElement {
 
         ${logHtml}
 
+        ${customBtnHtml}
+
       </ha-card>
     `;
-
-    this._attachListeners();
   }
 
   getCardSize() { return 4; }
