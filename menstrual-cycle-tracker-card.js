@@ -138,11 +138,13 @@ class MenstrualCycleTrackerCard extends HTMLElement {
     const service = action === 'start' ? 'log_period_start' : 'log_period_end';
     try {
       await this._hass.callService(DOMAIN, service, {});
+      setTimeout(() => { this._pending = null; this._render(); }, 2500);
     } catch (err) {
-      console.error('[MCT Card] service call failed:', err);
+      // Clear pending immediately and let HA show the native error notification.
+      this._pending = null;
+      this._render();
+      throw err;
     }
-
-    setTimeout(() => { this._pending = null; this._render(); }, 2500);
   }
 
   _attachListeners() {
