@@ -160,34 +160,32 @@ class MenstrualCycleTrackerCard extends HTMLElement {
     const service = action === 'start' ? 'log_period_start' : 'log_period_end';
 
     // Resolve config_entry_id so the integration knows which tracker to target.
-    // Priority: card config → WS entity registry → device registry
+    // Priority: card config → config entries matched by entity slug
     if (!this._trackerId) {
       this._trackerId = this._config.tracker || null;
 
       if (!this._trackerId) {
         try {
-          const entry = await this._hass.callWS({
-            type: 'config/entity_registry/get',
-            entity_id: this._config.entity,
+          const entries = await this._hass.callWS({
+            type: 'config_entries/get',
+            domain: DOMAIN,
           });
-          this._trackerId = entry?.config_entry_id;
-        } catch (e) {
-          console.warn('[cycle-card] entity registry WS failed:', e);
-        }
-      }
-
-      if (!this._trackerId) {
-        try {
-          const ent = this._hass.entities?.[this._config.entity];
-          const devId = ent?.device_id || ent?.di;
-          if (devId) {
-            const dev = this._hass.devices?.[devId];
-            this._trackerId = (dev?.config_entries)?.[0];
+          if (entries?.length === 1) {
+            this._trackerId = entries[0].entry_id;
+          } else if (entries?.length > 1) {
+            // Match config entry title to entity slug
+            // e.g. entity binary_sensor.kenzi_period_active → slug "kenzi"
+            //      config entry title "kenzi" or "My Cycle" → normalised "my_cycle"
+            const slug = this._config.entity
+              .replace(/^binary_sensor\./, '')
+              .replace(/_period_active$/, '');
+            const match = entries.find(
+              e => e.title.toLowerCase().replace(/\s+/g, '_') === slug,
+            );
+            this._trackerId = match?.entry_id ?? null;
           }
-        } catch { /* ignore */ }
+        } catch { /* ignore – user can set tracker manually */ }
       }
-
-      console.log('[cycle-card] resolved tracker:', this._trackerId ?? 'NONE');
     }
 
     try {
