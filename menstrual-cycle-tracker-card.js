@@ -157,11 +157,9 @@ class MenstrualCycleTrackerCard extends HTMLElement {
     this._render();
 
     const service = action === 'start' ? 'log_period_start' : 'log_period_end';
+    const tracker = this._hass.entities?.[this._config.entity]?.config_entry_id;
     try {
-      await this._hass.callService(
-        DOMAIN, service, {},
-        { entity_id: this._config.entity },
-      );
+      await this._hass.callService(DOMAIN, service, tracker ? { tracker } : {});
       setTimeout(() => { this._pending = null; this._render(); }, 2500);
     } catch {
       this._pending = null;
