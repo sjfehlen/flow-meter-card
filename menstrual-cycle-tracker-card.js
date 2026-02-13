@@ -248,7 +248,7 @@ class MenstrualCycleTrackerCard extends HTMLElement {
       } else if (daysOverdue != null && daysOverdue > 0) {
         nextLabel = `${pl(daysOverdue, 'day')} overdue`;
         if (nextPeriodStr) nextLabel += ` · was ${nextPeriodStr}`;
-      } else if (nextPeriodStr && daysUntil != null) {
+      } else if (nextPeriodStr && daysUntil != null && daysUntil > 0) {
         nextLabel = `${nextPeriodStr} · in ${pl(daysUntil, 'day')}`;
       } else if (nextPeriodStr) {
         nextLabel = nextPeriodStr;
